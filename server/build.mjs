@@ -5,7 +5,7 @@ await esbuild.build({
     bundle: true,
     outfile: "build/server.js",
     platform: "node",
-    target: "node18",
+    target: "node20",
     // format: "esm",
     // output to console
     logLevel: "info",

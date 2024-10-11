@@ -8,7 +8,7 @@
     "lint": "tsc -noEmit",
     "test": "jest",
     "start": "node --enable-source-maps ./build/index.js",
-    "build": "tsc --noEmit && esbuild ./src/index.ts --bundle --platform=node --target=node14 --sourcemap --outfile=./build/index.js"
+    "build": "tsc --noEmit && esbuild ./src/index.ts --bundle --platform=node --target=node20 --sourcemap --outfile=./build/index.js"
   },
   "dependencies": {
     "chalk": "4",
