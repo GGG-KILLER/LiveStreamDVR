@@ -1,10 +1,5 @@
 # syntax=docker/dockerfile:1.4
-FROM node:20-bullseye-slim
-
-# make app folder
-RUN mkdir -p /usr/local/share/twitchautomator \
-    && chown -R node:node /usr/local/share/twitchautomator \
-    && chmod -R 775 /usr/local/share/twitchautomator
+FROM node:20-bullseye-slim as base
 
 # internal docker build args for build date and dev mode
 ARG IS_DEV
@@ -14,29 +9,21 @@ ENV VITE_IS_DEV=${IS_DEV}
 ENV BUILD_DATE=${BUILD_DATE}
 ENV VITE_BUILD_DATE=${BUILD_DATE}
 
-# system packages
-#RUN apk --no-cache add \
-#    gcc g++ libc-dev git curl \
-#    ca-certificates \
-#    python3 py3-pip py3-wheel \
-#    ffmpeg mediainfo \
-#    util-linux busybox-initscripts procps gcompat \
-#    libxml2-dev libxslt-dev python3-dev \
-#    bash icu-libs krb5-libs libgcc libintl libssl1.1 libstdc++ zlib fontconfig
+# make app folder
+RUN mkdir -p /usr/local/share/twitchautomator \
+    && chown node:node /usr/local/share/twitchautomator \
+    && chmod 775 /usr/local/share/twitchautomator
 
-RUN apt-get update && apt-get install -y \
-    ffmpeg mediainfo \
-    python3 python3-pip python3-wheel libxml2-dev libxslt-dev python3-dev \
-    bash git curl unzip rclone \
+RUN apt-get -y update \
+    && apt-get install -y ffmpeg mediainfo python3 python3-pip python3-wheel libxml2-dev libxslt-dev python3-dev bash git curl unzip rclone --no-install-recommends \
     && apt-get clean
 
 # copy over pipenv files and install dependencies for python
-# WORKDIR /usr/local/share/twitchautomator
 COPY ./Pipfile ./Pipfile.lock ./requirements.txt ./binaries.txt /usr/local/share/twitchautomator/
 # install pipenv globally
 RUN pip install pipenv && pip cache purge
 # switch to node user to install pipenv dependencies
-USER node 
+USER node
 ENV PATH="${PATH}:/home/node/.local/bin"
 RUN cd /usr/local/share/twitchautomator && \
     pipenv install --deploy --ignore-pipfile --verbose && \
@@ -47,71 +34,71 @@ RUN cd /usr/local/share/twitchautomator && \
 USER root
 
 # remove dev packages
-RUN apt-get remove -y \
-    libxml2-dev libxslt-dev python3-dev \
+RUN apt-get remove -y libxml2-dev libxslt-dev python3-dev \
     && apt-get autoremove -y
 
-# install yarn
-# RUN npm install -g yarn
-    
-# libfontconfig1 can't be found
+FROM base as build
 
-# pip packages
-# COPY ./requirements.txt /tmp/requirements.txt
-# RUN pip install -r /tmp/requirements.txt \
-#     && rm /tmp/requirements.txt \
-#     && pip cache purge
+# make app folder
+RUN mkdir -p /usr/local/share/twitchautomator \
+    && chown -R node:node /usr/local/share/twitchautomator \
+    && chmod -R 775 /usr/local/share/twitchautomator
+
+USER node
 
 # common
-COPY --chown=node:node --chmod=775 ./common /usr/local/share/twitchautomator/common
+COPY --chown=node:node ./common /usr/local/share/twitchautomator/common
+
+FROM build as build-chat-dumper
 
 # chat dumper
-COPY --chown=node:node --chmod=775 ./twitch-chat-dumper /usr/local/share/twitchautomator/twitch-chat-dumper
+COPY --chown=node:node ./twitch-chat-dumper /usr/local/share/twitchautomator/twitch-chat-dumper
 RUN cd /usr/local/share/twitchautomator/twitch-chat-dumper \
     && yarn \
-    && yarn build \
-    && rm -rf node_modules \
-    && rm -rf .yarn/cache \
-    && yarn cache clean --all
+    && yarn build
+
+FROM build as build-vod-chat
 
 # vod player
-COPY --chown=node:node --chmod=775 ./twitch-vod-chat /usr/local/share/twitchautomator/twitch-vod-chat
+COPY --chown=node:node ./twitch-vod-chat /usr/local/share/twitchautomator/twitch-vod-chat
 RUN cd /usr/local/share/twitchautomator/twitch-vod-chat \
     && yarn install --immutable \
     && yarn build --base=/vodplayer \
-    && yarn buildlib \
-    && rm -rf node_modules \
-    && rm -rf .yarn/cache \
-    && yarn cache clean --all
+    && yarn buildlib
+
+FROM build as build-server
 
 # server
-COPY --chown=node:node --chmod=775 ./server /usr/local/share/twitchautomator/server
+COPY --chown=node:node ./server /usr/local/share/twitchautomator/server
 RUN cd /usr/local/share/twitchautomator/server \
     && yarn \
     && yarn lint:ts \
     && yarn build \
-    && yarn run generate-licenses \
-    && rm -rf node_modules \
-    && rm -rf .yarn/cache \
-    && yarn cache clean --all
+    && yarn run generate-licenses
+
+FROM build as build-client
+
+# copy vod player dependencies
+COPY --from=build-vod-chat \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/twitch-vod-chat/ \
+    /usr/local/share/twitchautomator/twitch-vod-chat/
+COPY --from=build-server \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/server/ \
+    /usr/local/share/twitchautomator/server/
+
+# USER root
+# RUN ls -lAFh /usr/local/share/twitchautomator/twitch-vod-chat/dist-lib/twitch-vod-chat* && exit 1
 
 # client
-COPY --chown=node:node --chmod=775 ./client-vue /usr/local/share/twitchautomator/client-vue
+COPY --chown=node:node ./client-vue /usr/local/share/twitchautomator/client-vue
 RUN cd /usr/local/share/twitchautomator/client-vue \
     && yarn \
     && yarn build \
-    && yarn run generate-licenses \
-    && rm -rf node_modules \
-    && rm -rf .yarn/cache \
-    && yarn cache clean --all
+    && yarn run generate-licenses
 
-# copy rest
-# COPY --chown=node:node --chmod=775 . /usr/local/share/twitchautomator/
-
-# install dotnet for twitchdownloader
-# ADD https://dot.net/v1/dotnet-install.sh /tmp/dotnet-install.sh
-# RUN chmod +x /tmp/dotnet-install.sh && /tmp/dotnet-install.sh --channel 3.1 --verbose --install-dir /usr/share/dotnet
-# --runtime dotnet
+FROM base as final
 
 # download twitchdownloader, is this legal? lmao
 COPY ./docker/fetch-tdl.sh /tmp/fetch-tdl.sh
@@ -122,23 +109,57 @@ ENV TCD_TWITCHDOWNLOADER_PATH=/usr/local/bin/TwitchDownloaderCLI
 COPY ./docker/fetch-ttv-lol.sh /tmp/fetch-ttv-lol.sh
 RUN bash /tmp/fetch-ttv-lol.sh
 
-# application folder permissions
-# seems like docker does not support recursive chown in the copy command
-# so this is a workaround, doubling the layer size unfortunately.
-# it also takes a very long time on slow storage
-# RUN chown -c -R node:node /usr/local/share/twitchautomator && chmod -R 775 /usr/local/share/twitchautomator
-# RUN chown -c -R node:node /usr/local/share/twitchautomator/data && chmod -R 775 /usr/local/share/twitchautomator/data
-
 # make home folder
-RUN mkdir -p /home/node && chown -R node:node /home/node
+RUN mkdir -p /home/node && chown node:node /home/node
 ENV HOME /home/node
 
 # fonts
 RUN mkdir /home/node/.fonts && chown node:node /home/node/.fonts
 COPY ./docker/fonts /home/node/.fonts
 
-# get certs
-# RUN wget https://curl.haxx.se/ca/cacert.pem -O /tmp/cacert.pem
+# chat dumper
+COPY --from=build-chat-dumper \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/twitch-chat-dumper/build/ \
+    /usr/local/share/twitchautomator/twitch-chat-dumper/build/
+COPY --from=build-chat-dumper \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/twitch-chat-dumper/package.json \
+    /usr/local/share/twitchautomator/twitch-chat-dumper/
+
+# vod player
+COPY --from=build-vod-chat \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/twitch-vod-chat/dist/ \
+    /usr/local/share/twitchautomator/twitch-vod-chat/dist/
+COPY --from=build-vod-chat \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/twitch-vod-chat/dist/ \
+    /usr/local/share/twitchautomator/twitch-vod-chat/package.json \
+    /usr/local/share/twitchautomator/twitch-vod-chat/
+
+# server
+COPY --from=build-server \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/server/build/ \
+    /usr/local/share/twitchautomator/server/build/
+COPY --from=build-server \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/server/tsconfig.json \
+    /usr/local/share/twitchautomator/server/package.json \
+    /usr/local/share/twitchautomator/server/LICENSES.txt \
+    /usr/local/share/twitchautomator/server/
+
+# client
+COPY --from=build-client \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/client-vue/dist/ \
+    /usr/local/share/twitchautomator/client-vue/dist/
+COPY --from=build-client \
+    --chown=node:node \
+    /usr/local/share/twitchautomator/client-vue/package.json \
+    /usr/local/share/twitchautomator/client-vue/LICENSES.txt \
+    /usr/local/share/twitchautomator/client-vue/
 
 # twitchautomator docker specific configs
 ENV TCD_BIN_DIR=/usr/local/bin
@@ -149,12 +170,10 @@ ENV TCD_MEDIAINFO_PATH=/usr/bin/mediainfo
 ENV TCD_NODE_PATH=/usr/local/bin/node
 ENV TCD_DOCKER=1
 ENV TCD_WEBSOCKET_ENABLED=1
-# ENV TCD_CA_PATH=/tmp/cacert.pem
 ENV TCD_SERVER_PORT=8080
 ENV TCD_PYTHON_ENABLE_PIPENV=1
 
-# USER node
+VOLUME [ "/usr/local/share/twitchautomator/data" ]
 WORKDIR /usr/local/share/twitchautomator/server
-
-ENTRYPOINT [ "yarn", "run", "start" ]
+ENTRYPOINT [ "node", "--enable-source-maps", "build/server.js" ]
 EXPOSE 8080
